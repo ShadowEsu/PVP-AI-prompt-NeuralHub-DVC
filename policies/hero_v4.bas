@@ -1,4 +1,4 @@
-' Neural Viking GOTA policy v2 (Preston Susanto, NeuralHub at DVC)
+' Neural Viking GOTA policy v4 (Preston Susanto, NeuralHub at DVC)
 ' Built from the official starter. Goal: win fast (Emmett's Glory pays
 ' winning heroes XP per minute, losers and timeouts score zero).
 ' Core idea: starter teams almost never kill towers, so every match times
@@ -23,6 +23,8 @@ dim pref(9)
 ' ---- Tunable strategy constants (edited by experiments) ----
 sub config()
   pushLane = 1
+  regroupLevel = 6
+  regroupDist = 9
   thinkTicks = 3
   retreatPct = 30
   pref(0) = Berserker
@@ -140,6 +142,7 @@ sub readObject(index)
       ' A camp we walked past is attacking us.
       campHitDistance = distance
       campHitId = id
+      campHitTier = objectClass(index)
       campHitIndex = index
       campHitHp = hp
       campHitX = x
@@ -195,6 +198,11 @@ sub readObject(index)
     elseif kind = 2 then
       allyIds(allies) = id
       allies = allies + 1
+      if id <> selfId then
+        allySumX = allySumX + x
+        allySumY = allySumY + y
+        allyHeroes = allyHeroes + 1
+      end if
       class = objectClass(index)
       if hp > seenMaxHp(class) then
         seenMaxHp(class) = hp
@@ -340,6 +348,9 @@ sub observe()
   friendlyPower = 0
   enemyPower = 0
   allies = 0
+  allySumX = 0
+  allySumY = 0
+  allyHeroes = 0
   tanks = 0
   towerAggro = 0
   healId = selfId
@@ -382,7 +393,11 @@ sub observe()
   towerDanger = 0
   if towerId <> 0 then
     finishing = towerHp <= selfAttackDamage * 2 and selfHp * 10 >= selfMaxHp * 4
-    if towerTarget <> selfId and creepsAtTower >= 2 then
+    if towerTarget >= 1000 then
+      ' The tower is shooting a creep (creep IDs start at 1000) and keeps
+      ' that target, then picks another creep before any hero.
+      towerSafe = 1
+    elseif towerTarget <> selfId and creepsAtTower >= 2 then
       towerSafe = 1
     elseif finishing then
       towerSafe = 1
@@ -419,7 +434,7 @@ sub observe()
   end if
   campFlee = 0
   if campHitId <> 0 and bestKind <> 2 and bestKind <> 1 then
-    if selfHp * 2 >= selfMaxHp then
+    if selfHp * 2 >= selfMaxHp and selfLevel >= campHitTier * 3 - 2 then
       bestId = campHitId
       bestIndex = campHitIndex
       bestKind = 6
@@ -529,8 +544,9 @@ sub inventory()
   end if
   ' Damage kills towers and heroes; one health stack and portals keep tempo.
   budget = selfGold
-  buy(1, 30, 3)
+  buy(1, 30, 4)
   buy(21, 100, 1)
+  buy(21, 100, 2)
   if role = 2 or role = 3 then
     buy(20, 190, 1)
     buy(21, 100, 1)
@@ -938,7 +954,7 @@ if retreating then
   if owned(21) > 0 and selfPortalCooldown = 0 and selfRootTicks = 0 then
     dx = myX - homeX
     dy = myY - homeY
-    if dx * dx + dy * dy > 400 and threatDistance > 100 then
+    if dx * dx + dy * dy > 400 and threatDistance > 16 then
       accepted = useItemAt(inventorySlot(21), originX + side * spawnX, originY + side * spawnY)
       if accepted then
         end
@@ -1013,6 +1029,17 @@ end if
 ' Macro: march our lane. Wait outside tower range until creeps arrive.
 goalX = pushX
 goalY = pushY
+if selfLevel >= regroupLevel and allyHeroes >= 2 then
+  ' Fight as a group: rejoin the team before pushing on.
+  groupX = allySumX \ allyHeroes
+  groupY = allySumY \ allyHeroes
+  dx = groupX - myX
+  dy = groupY - myY
+  if dx * dx + dy * dy > regroupDist * regroupDist then
+    moveTo(groupX, groupY, 0)
+    end
+  end if
+end if
 march = 1
 dx = myX - pushX
 dy = myY - pushY
@@ -1037,7 +1064,7 @@ if canShop() and owned(21) > 0 and selfPortalCooldown = 0 then
   dx = myX - forwardX
   dy = myY - forwardY
   if forwardDistance < 1000000 and dx * dx + dy * dy > 400 then
-    if threatDistance > 144 then
+    if threatDistance > 36 then
       accepted = useItemAt(inventorySlot(21), originX + side * forwardX, originY + side * forwardY)
       if accepted then
         end
