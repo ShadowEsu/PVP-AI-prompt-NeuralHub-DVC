@@ -1,0 +1,322 @@
+{
+  "source": "' GotA reference policy: draft, farm, push, heal, resupply, and finish the god.\n' Every GotA host function has a gameplay use here; calls remain conditional.\n' Object indices last only for this decision. IDs may be remembered.\n' Read the bot guide for units, LOS restrictions, and action error constants.\n' Abilities and items are used only by our explicit policy commands.\n\ndim owned(22)\ndim inventorySlot(22)\ndim allyIds(9)\ndim seenMaxHp(9)\ndim castRange(3)\ndim castDelay(3)\ndim castGround(3)\ndim castMinimum(3)\n\nsub chooseHero()\n  if draftTurnId <> selfId then\n    exit sub\n  end if\n  bestClass = -1\n  bestScore = -10000\n  for candidate = 0 to 9\n    if heroAvailable(candidate) then\n      role = heroRole(candidate)\n      score = 100\n      for player = 0 to draftPlayerCount() - 1\n        if draftPlayerTeam(player) = selfTeam then\n          picked = draftedClass(draftPlayerId(player))\n          if picked >= 0 then\n            if heroRole(picked) = role then\n              score = score - 100\n            end if\n          end if\n        end if\n      next player\n      if score > bestScore then\n        bestScore = score\n        bestClass = candidate\n      end if\n    end if\n  next candidate\n  if bestClass >= 0 then\n    accepted = draftHero(bestClass)\n    actionError = lastActionError()\n  end if\nend sub\n\nsub learnAbilities()\n  ' Rank requirements and effects come from the host, not a stat table.\n  for upgrade = 1 to 4\n    if abilityPoints() = 0 then\n      exit sub\n    end if\n    upgradeSlot = -1\n    upgradeScore = -1\n    for spellSlot = 0 to 3\n      rank = abilityLevel(spellSlot)\n      if rank < abilityMaxLevel(spellSlot) then\n        if selfLevel >= abilityRequiredLevel(spellSlot) then\n          if canLevelAbility(spellSlot) then\n            ' Prefer R, W, E, Q whenever the next rank is legal.\n            score = spellSlot\n            if spellSlot = 1 then\n              score = 2\n            elseif spellSlot = 2 then\n              score = 1\n            end if\n            if score > upgradeScore then\n              upgradeScore = score\n              upgradeSlot = spellSlot\n            end if\n          end if\n        end if\n      end if\n    next spellSlot\n    if upgradeSlot < 0 then\n      exit sub\n    end if\n    accepted = levelAbility(upgradeSlot)\n    actionError = lastActionError()\n  next upgrade\nend sub\n\nsub readObject(index)\n  id = objectId(index)\n  kind = objectKind(index)\n  team = objectTeam(index)\n  hp = objectHp(index)\n  if hp <= 0 then\n    exit sub\n  end if\n  x = originX + side * objectX(index)\n  y = originY + side * objectY(index)\n  dx = x - myX\n  dy = y - myY\n  distance = dx * dx + dy * dy\n  if kind = 6 then\n    ' Camps never distract from lane combat or count as enemy heroes.\n    if objectReturning(index) or objectAlive(index) = 0 then\n      exit sub\n    end if\n    camp = objectCamp(index)\n    tier = campTier(camp)\n    campDx = originX + side * campX(camp) - myX\n    campDy = originY + side * campY(camp) - myY\n    if campDx * campDx + campDy * campDy > 100 then\n      exit sub\n    end if\n    enoughHealth = selfHp * 10 >= selfMaxHp * 7\n    if selfTarget = id then\n      enoughHealth = selfHp * 10 >= selfMaxHp * 4\n    end if\n    if camp >= 0 and camp < campCount() and enoughHealth then\n      if selfLevel >= 1 + (tier - 1) * 3 and distance <= 64 then\n        score = 100 - distance\n        if objectLeader(index) then\n          score = score - 10\n        end if\n        if selfTarget = id then\n          score = score + 100\n        end if\n        if score > campScore then\n          campScore = score\n          campIndex = index\n          campId = id\n          campHp = hp\n          campXpos = x\n          campYpos = y\n          campDistance = distance\n        end if\n      end if\n    end if\n    exit sub\n  end if\n  if team = selfTeam then\n    if kind = 1 then\n      homeX = x\n      homeY = y\n      enemyX = mapWidth - 1 - x\n      enemyY = mapHeight - 1 - y\n    elseif kind = 4 then\n      ' Protected allied towers still serve as portal anchors.\n      dx = x - enemyX\n      dy = y - enemyY\n      score = dx * dx + dy * dy\n      if score < forwardDistance then\n        forwardDistance = score\n        forwardX = x\n        forwardY = y\n      end if\n    elseif kind = 2 then\n      allyIds(allies) = id\n      allies = allies + 1\n      class = objectClass(index)\n      if hp > seenMaxHp(class) then\n        seenMaxHp(class) = hp\n      end if\n      if distance <= 100 then\n        friendlyPower = friendlyPower + objectLevel(index) + 2\n      end if\n      missing = seenMaxHp(class) - hp\n      if distance <= healRange * healRange and missing > healMissing then\n        healMissing = missing\n        healId = id\n      end if\n    elseif kind = 3 and distance <= 64 then\n      tanks = tanks + 1\n    end if\n    exit sub\n  end if\n  if kind = 1 then\n    enemyX = x\n    enemyY = y\n  end if\n  if kind = 2 and distance <= 144 then\n    enemyPower = enemyPower + objectLevel(index) + 2\n    if objectMana(index) >= 25 and objectSilenceTicks(index) = 0 then\n      enemyPower = enemyPower + 2\n    end if\n  end if\n  if distance < threatDistance then\n    threatDistance = distance\n    threatX = x\n    threatY = y\n  end if\n  if distance > 324 or objectAlive(index) = 0 then\n    exit sub\n  end if\n  target = objectTarget(index)\n  if kind = 4 and target = selfId then\n    towerAggro = 1\n  end if\n  score = 1000 - distance * 2\n  if kind = 1 then\n    score = score + 500\n  elseif kind = 2 then\n    score = score + 60 - objectLevel(index) * 8\n    if hp < selfAttackDamage * 4 then\n      score = score + 250\n    end if\n  elseif kind = 3 then\n    score = score + 100\n    if hp <= selfAttackDamage and selfAttackCooldown <= tickRate \\ 2 then\n      score = score + 400\n    end if\n  elseif kind = 5 then\n    score = score + 40\n  end if\n  if target = selfId then\n    score = score + 40\n  end if\n  if id = selfTarget then\n    score = score + 60\n  end if\n  if id = blockedId and worldTick < blockedUntil then\n    exit sub\n  end if\n  if score > bestScore then\n    bestScore = score\n    bestIndex = index\n    bestId = id\n    bestKind = kind\n    bestHp = hp\n    bestX = x\n    bestY = y\n    bestDistance = distance\n  end if\nend sub\n\nsub observe()\n  campScore = -10000\n  campId = 0\n  bestScore = -10000\n  bestId = 0\n  bestDistance = 1000000\n  threatDistance = 1000000\n  forwardDistance = 1000000\n  friendlyPower = 0\n  enemyPower = 0\n  allies = 0\n  tanks = 0\n  towerAggro = 0\n  healId = selfId\n  healMissing = selfMaxHp - selfHp\n  seenMaxHp(selfClass) = selfMaxHp\n  objects = objectCount()\n  ' Buildings and heroes precede creeps. Rotate the large creep tail so a\n  ' crowded battlefield cannot exhaust the per-decision VM budget.\n  for scan = 0 to 95\n    index = scan\n    if scan >= 48 then\n      index = scan + scanOffset\n    end if\n    if index < objects then\n      readObject(index)\n    end if\n  next scan\n  ' Retain a creep target outside this scan window only after validating\n  ' its remembered index against the stable ID in the fresh observation.\n  if targetIndex >= 48 and targetIndex < objects and selfTarget <> 0 then\n    if targetIndex < 48 + scanOffset or targetIndex >= 96 + scanOffset then\n      if objectId(targetIndex) = selfTarget then\n        readObject(targetIndex)\n      end if\n    end if\n  end if\n  scanOffset = scanOffset + 48\n  if scanOffset >= objects - 48 then\n    scanOffset = 0\n  end if\n  if bestId = 0 and campId <> 0 and towerAggro = 0 and enemyPower = 0 then\n    bestId = campId\n    bestIndex = campIndex\n    bestKind = 6\n    bestHp = campHp\n    bestX = campXpos\n    bestY = campYpos\n    bestDistance = campDistance\n  end if\n  if bestId = 0 then\n    exit sub\n  end if\n  targetIndex = bestIndex\n  ' Divide large integer world units before mixing them with Q16.16 values.\n  velocityX = (side * objectVelX(bestIndex) \\ 100) / (worldScale \\ 100)\n  velocityY = (side * objectVelY(bestIndex) \\ 100) / (worldScale \\ 100)\n  ' Do not lead a unit whose control lasts through the predicted impact.\n  targetHeld = objectStunTicks(bestIndex)\n  targetRoot = objectRootTicks(bestIndex)\n  if targetRoot > targetHeld then\n    targetHeld = targetRoot\n  end if\n  facingX = (side * objectFacingX(bestIndex) \\ 100) / (worldScale \\ 100)\n  facingY = (side * objectFacingY(bestIndex) \\ 100) / (worldScale \\ 100)\n  aimedAtUs = facingX * (myX - bestX) + facingY * (myY - bestY)\n  if bestKind = 2 then\n    ' Visible equipment and potion stacks help judge a close duel.\n    for inspectSlot = 0 to 5\n      gear = objectItemId(bestIndex, inspectSlot)\n      quantity = objectItemCount(bestIndex, inspectSlot)\n      if quantity > 0 and bestDistance <= 144 then\n        if gear >= 5 and gear <= 20 then\n          enemyPower = enemyPower + 1\n        elseif gear = 1 or gear = 2 then\n          enemyPower = enemyPower + 2\n        end if\n      end if\n    next inspectSlot\n  end if\nend sub\n\nsub buy(id, price, quantity)\n  if owned(id) >= quantity or budget < price then\n    exit sub\n  end if\n  if owned(id) = 0 and emptySlots = 0 then\n    exit sub\n  end if\n  accepted = buyItem(id)\n  actionError = lastActionError()\n  if accepted then\n    if owned(id) = 0 then\n      emptySlots = emptySlots - 1\n    end if\n    owned(id) = owned(id) + 1\n    budget = budget - price\n    for boughtSlot = 0 to 5\n      if itemId(boughtSlot) = id then\n        inventorySlot(id) = boughtSlot\n      end if\n    next boughtSlot\n  end if\nend sub\n\nsub inventory()\n  for id = 0 to 22\n    owned(id) = 0\n    inventorySlot(id) = -1\n  next id\n  emptySlots = 0\n  for itemSlot = 0 to 5\n    id = itemId(itemSlot)\n    if id = 0 then\n      emptySlots = emptySlots + 1\n    else\n      owned(id) = itemCount(itemSlot)\n      inventorySlot(id) = itemSlot\n      if itemCooldown(itemSlot) = 0 and inOwnSpawn() = 0 then\n        consume = 0\n        if id = 1 and selfMaxHp - selfHp >= 60 then\n          consume = threatDistance > 100 and worldTick - hurtTick > tickRate\n        elseif id = 2 and selfHp * 2 < selfMaxHp then\n          consume = 1\n        elseif id = 22 and selfMaxMana - selfMana >= 45 then\n          consume = threatDistance > 100 and worldTick - hurtTick > tickRate\n        elseif id = 3 and selfMana * 3 < selfMaxMana then\n          consume = bestId <> 0\n        elseif id = 4 and selfTarget = bestId and bestId <> 0 then\n          consume = bestDistance <= attackRange * attackRange\n        end if\n        if consume then\n          accepted = useItem(itemSlot)\n          actionError = lastActionError()\n          if accepted then\n            owned(id) = owned(id) - 1\n            if owned(id) = 0 then\n              emptySlots = emptySlots + 1\n              inventorySlot(id) = -1\n            end if\n          end if\n        end if\n      end if\n    end if\n  next itemSlot\n  if canShop() = 0 then\n    exit sub\n  end if\n  ' Reserve three slots for recovery and travel, two for useful equipment,\n  ' and one for a role-specific burst consumable. Stacks top up on return.\n  budget = selfGold\n  buy(8, 100, 1)\n  buy(1, 30, 2)\n  buy(21, 100, 2)\n  buy(22, 45, 2)\n  if role = 0 or role = 4 then\n    buy(16, 160, 1)\n    buy(2, 75, 2)\n  elseif role = 1 then\n    buy(19, 180, 1)\n    buy(4, 40, 2)\n  else\n    buy(20, 190, 1)\n    buy(3, 90, 2)\n  end if\nend sub\n\nsub dodgeWarnings()\n  dodge = 0\n  warnings = spellCount()\n  ' Rotate unusually busy spell lists instead of starving later warnings.\n  for warning = warningOffset to warningOffset + 11\n    if warning < warnings then\n      spell = spellAbility(warning)\n      caster = spellCasterId(warning)\n      hostile = caster <> selfId\n      for ally = 0 to allies - 1\n        if caster = allyIds(ally) then\n          hostile = 0\n        end if\n      next ally\n      ' Recovery effects are harmless, including those with hidden casters.\n      if spell = 0 or spell = 2 or spell = 8 or spell = 12 then\n        hostile = 0\n      end if\n      if spell = 13 or spell = 14 or spell = 16 or spell = 20 then\n        hostile = 0\n      end if\n      if spell = 32 or spell = 36 then\n        hostile = 0\n      end if\n      impact = spellImpactTick(warning) - worldTick\n      warningX = originX + side * spellX(warning)\n      warningY = originY + side * spellY(warning)\n      dx = myX - warningX\n      dy = myY - warningY\n      if hostile and impact > 0 and impact <= tickRate * 3 then\n        if dx * dx + dy * dy <= 9 then\n          dodge = 1\n          dodgeX = myX + 3\n          dodgeY = myY + 3\n          if dx < 0 then\n            dodgeX = myX - 3\n          end if\n          if dy < 0 then\n            dodgeY = myY - 3\n          end if\n        end if\n      end if\n    end if\n  next warning\n  warningOffset = warningOffset + 12\n  if warningOffset >= warnings then\n    warningOffset = 0\n  end if\nend sub\n\nsub moveTo(goalX, goalY, marching)\n  if selfRootTicks > 0 then\n    exit sub\n  end if\n  if goalX = orderX and goalY = orderY and marching = orderMarch then\n    if worldTick - orderTick < tickRate * 2 then\n      exit sub\n    end if\n  end if\n  ' Snap the requested destination to an open nearby surface. A* in the\n  ' host still owns the complete route and cliff/ramp collision checks.\n  routeScore = 1000000\n  routeFound = 0\n  floorHeight = terrainHeight(selfX, selfY)\n  for offsetY = -1 to 1\n    for offsetX = -1 to 1\n      tileX = goalX + offsetX\n      tileY = goalY + offsetY\n      worldTileX = originX + side * tileX\n      worldTileY = originY + side * tileY\n      if tileX >= 0 and tileX < mapWidth then\n        if tileY >= 0 and tileY < mapHeight then\n          open = terrainWalkable(worldTileX, worldTileY)\n          ground = terrainKind(worldTileX, worldTileY)\n          height = terrainHeight(worldTileX, worldTileY)\n          depth = terrainWaterDepth(worldTileX, worldTileY)\n          if open = 0 then\n            for layer = 0 to mapLayers - 1\n              worldLayer = layer\n              if layer = RedFortLayer or layer = BlueFortLayer then\n                worldLayer = layer + selfTeam * (RedFortLayer + BlueFortLayer - 2 * layer)\n              end if\n              if terrainWalkableAt(worldTileX, worldTileY, worldLayer) then\n                open = 1\n                ground = terrainKindAt(worldTileX, worldTileY, worldLayer)\n                height = terrainHeightAt(worldTileX, worldTileY, worldLayer)\n                depth = terrainWaterDepthAt(worldTileX, worldTileY, worldLayer)\n                exit for\n              end if\n            next layer\n          end if\n          if open and ground <> TerrainNone then\n            elevation = height - floorHeight\n            if elevation < 0 then\n              elevation = -elevation\n            end if\n            score = (offsetX * offsetX + offsetY * offsetY) * 20\n            score = score + depth * 2 + elevation\n            if ground = TerrainRoad then\n              score = score - 5\n            end if\n            if score < routeScore then\n              routeScore = score\n              routeX = tileX\n              routeY = tileY\n              routeFound = 1\n            end if\n          end if\n        end if\n      end if\n    next offsetX\n  next offsetY\n  if routeFound = 0 then\n    exit sub\n  end if\n  if marching then\n    accepted = attackMove(originX + side * routeX, originY + side * routeY)\n  else\n    accepted = walkTo(originX + side * routeX, originY + side * routeY)\n  end if\n  actionError = lastActionError()\n  orderTick = worldTick\n  if accepted then\n    orderX = goalX\n    orderY = goalY\n    orderMarch = marching\n  elseif actionError = ActionNoRoute then\n    ' Try the lane center on the next decision rather than retrying a wall.\n    crossedMiddle = 0\n    blockedId = bestId\n    blockedUntil = worldTick + tickRate * 3\n  end if\nend sub\n\nsub spells()\n  if selfSilenceTicks > 0 then\n    exit sub\n  end if\n  for spellSlot = 0 to 3\n    charges = abilityCharges(spellSlot)\n    recharge = abilityRecharge(spellSlot)\n    damage = abilityDamage(spellSlot)\n    healing = abilityHeal(spellSlot)\n    restore = abilityRestore(spellSlot)\n    cost = abilityManaCost(spellSlot)\n    if abilityLevel(spellSlot) > 0 and charges > 0 then\n      if abilityCooldown(spellSlot) = 0 and selfMana >= cost then\n        castId = 0\n        if healing > 0 and healMissing >= healing \\ 2 then\n          if selfClass = DruidWarden and spellSlot > 0 then\n            castId = healId\n          elseif selfClass = VanguardKnight and spellSlot = 2 then\n            ' Aegis heals around us, even when only an ally is wounded.\n            castId = selfId\n          elseif selfMaxHp - selfHp >= healing \\ 2 then\n            castId = selfId\n          end if\n        elseif restore > 0 and selfMaxMana - selfMana >= restore then\n          castId = selfId\n        elseif damage > 0 and bestId <> 0 then\n          if bestDistance <= castRange(spellSlot) * castRange(spellSlot) then\n            if bestDistance >= castMinimum(spellSlot) * castMinimum(spellSlot) then\n              ' Save the last recharging charge for valuable targets.\n              if bestKind <> 3 or charges > 1 or recharge <= tickRate then\n                castId = bestId\n              elseif bestHp <= damage then\n                castId = bestId\n              end if\n            end if\n          end if\n        end if\n        if castId <> 0 then\n          if castId = bestId and castGround(spellSlot) then\n            ' Area spells lead the observed movement, with a bounded lead.\n            leadX = velocityX * castDelay(spellSlot)\n            leadY = velocityY * castDelay(spellSlot)\n            if targetHeld >= castDelay(spellSlot) then\n              leadX = 0\n              leadY = 0\n            end if\n            if leadX > 2 then\n              leadX = 2\n            elseif leadX < -2 then\n              leadX = -2\n            end if\n            if leadY > 2 then\n              leadY = 2\n            elseif leadY < -2 then\n              leadY = -2\n            end if\n            aimX = bestX + leadX\n            aimY = bestY + leadY\n            if aimX >= 0 and aimX < mapWidth - 1 then\n              if aimY >= 0 and aimY < mapHeight - 1 then\n                accepted = castPoint(spellSlot, originX + side * aimX, originY + side * aimY)\n                actionError = lastActionError()\n                if accepted then\n                  exit sub\n                end if\n              end if\n            end if\n          end if\n          ' Targeted projectiles track their target. Targeted ground rings\n          ' offset their center so the enemy is inside the damaging band.\n          ' Also fall back here if a led point is outside the map or vision.\n          accepted = castTarget(spellSlot, castId)\n          actionError = lastActionError()\n          if accepted then\n            exit sub\n          end if\n        end if\n      end if\n    end if\n  next spellSlot\nend sub\n\nif drafting then\n  chooseHero()\n  end\nend if\n\n' Buy back immediately whenever affordable, including during a long respawn.\nif selfHp <= 0 then\n  price = buybackPrice()\n  if price > 0 and selfGold >= price then\n    accepted = buyback()\n    actionError = lastActionError()\n  end if\n  initialized = 0\n  end\nend if\nif selfChannelTicks > 0 or selfStunTicks > 0 then\n  end\nend if\nif worldTick < nextThink then\n  end\nend if\n' Use the same team-relative coordinates for every spatial decision.\nside = 1 - selfTeam * 2\noriginX = selfTeam * (mapWidth - 1)\noriginY = selfTeam * (mapHeight - 1)\nmyX = originX + side * selfX\nmyY = originY + side * selfY\n\nnextThink = worldTick + 6\nrole = heroRole(selfClass)\nattackRange = (selfAttackRange \\ 100) / (worldScale \\ 100)\nspeed = (selfMoveSpeed \\ 100) / (worldScale \\ 100)\n\nif initialized = 0 then\n  initialized = 1\n  spawnX = myX\n  spawnY = myY\n  homeX = myX\n  homeY = myY\n  enemyX = mapWidth - 1 - myX\n  enemyY = mapHeight - 1 - myY\n  previousHp = selfHp\n  progressTick = worldTick\n  previousX = myX\n  previousY = myY\n  crossedMiddle = 0\n  retreating = 0\n  ' The host exposes effects and costs, but not spell range or cast shape.\n  ' These small tables mirror content.nim; all distances are in tiles.\n  castRange(0) = 0\n  castRange(1) = 1.5\n  castRange(2) = 2.5\n  castRange(3) = 2\n  castDelay(2) = 24\n  castDelay(3) = 24\n  healRange = 4\n  for spellSlot = 0 to 3\n    castGround(spellSlot) = spellSlot >= 2\n    castMinimum(spellSlot) = 0\n  next spellSlot\n  if selfClass = VanguardKnight then\n    healRange = 7 / 3\n    castRange(2) = 7 / 3\n    castRange(3) = 11 / 6\n    castDelay(2) = 12\n    castDelay(3) = 6\n  elseif selfClass = Ranger then\n    castRange(0) = 7\n    castRange(1) = 6\n    castRange(2) = 6.5\n    castRange(3) = 8\n  elseif selfClass = Arcanist then\n    castRange(1) = 5.5\n    castRange(2) = 6\n    castRange(3) = 7\n    castDelay(2) = 48\n    castDelay(3) = 72\n  elseif selfClass = DruidWarden then\n    castRange(1) = 4\n    castRange(2) = 4\n    castRange(3) = 10 / 3\n  elseif selfClass = DemonHunter then\n    castRange(2) = 2\n    castRange(3) = 5\n    castDelay(2) = 6\n    castGround(3) = 0\n  elseif selfClass = DeathKnight then\n    castRange(2) = 8 / 3\n    castRange(3) = 7 / 3\n    castDelay(3) = 12\n    castGround(3) = 0\n    castMinimum(3) = 2 / 3\n  elseif selfClass = Crossbowman then\n    castRange(0) = 7\n    castRange(1) = 20 / 3\n    castRange(2) = 6\n    castRange(3) = 7.5\n    castDelay(2) = 12\n  elseif selfClass = Lich then\n    castRange(0) = 6\n    castRange(1) = 20 / 3\n    castRange(2) = 5\n    castRange(3) = 6.5\n    castGround(3) = 0\n  elseif selfClass = Warlock then\n    castRange(1) = 14 / 3\n    castRange(2) = 4\n    castRange(3) = 5\n    castGround(3) = 0\n  elseif selfClass = Berserker then\n    castRange(3) = 13 / 6\n    castDelay(2) = 12\n    castDelay(3) = 48\n  end if\nend if\n\nif selfHp < previousHp then\n  hurtTick = worldTick\nend if\npreviousHp = selfHp\nif selfAttacksLanded <> previousHits or myX <> previousX or myY <> previousY then\n  progressTick = worldTick\nend if\npreviousHits = selfAttacksLanded\npreviousX = myX\npreviousY = myY\nif worldTick - progressTick > tickRate * 6 and selfTarget <> 0 then\n  blockedId = selfTarget\n  blockedUntil = worldTick + tickRate * 3\n  progressTick = worldTick\nend if\n\nlearnAbilities()\nobserve()\ninventory()\nspells()\ndodgeWarnings()\n\nif selfHp * 4 < selfMaxHp or (bestKind = 6 and selfHp * 10 < selfMaxHp * 4) then\n  retreating = 1\nend if\nif selfMana * 8 < selfMaxMana and bestId = 0 then\n  retreating = 1\nend if\nif inOwnSpawn() then\n  if selfHp * 10 < selfMaxHp * 9 or selfMana * 10 < selfMaxMana * 9 then\n    moveTo(spawnX, spawnY, 0)\n    end\n  end if\n  retreating = 0\nend if\n\nif dodge and selfRootTicks = 0 then\n  moveTo(dodgeX, dodgeY, 0)\n  end\nend if\nif retreating then\n  ' A safe scroll saves the long return trip; damage and control can punish it.\n  if owned(21) > 0 and selfPortalCooldown = 0 and selfRootTicks = 0 then\n    dx = myX - homeX\n    dy = myY - homeY\n    if dx * dx + dy * dy > 400 and threatDistance > 144 then\n      accepted = useItemAt(inventorySlot(21), originX + side * spawnX, originY + side * spawnY)\n      actionError = lastActionError()\n      if accepted then\n        end\n      end if\n    end if\n  end if\n  moveTo(spawnX, spawnY, 0)\n  end\nend if\n\nif towerAggro and selfHp * 3 < selfMaxHp * 2 and tanks = 0 then\n  moveTo(homeX, homeY, 0)\n  end\nend if\nif enemyPower > friendlyPower + 6 and threatDistance < 64 then\n  if selfHp * 4 < selfMaxHp * 3 then\n    moveTo(homeX, homeY, 0)\n    end\n  end if\nend if\n\nif bestId <> 0 then\n  ' Finish a windup before kiting; never cancel every swing with movement.\n  if bestKind = 2 and aimedAtUs > 0 and attackRange >= 3 then\n    if bestDistance < 4 and selfAttackCooldown > tickRate \\ 2 then\n      if selfAttacksLanded > 0 and speed > 0 then\n        kiteStep = (selfMoveSpeed * tickRate) \\ worldScale\n        if kiteStep < 1 then\n          kiteStep = 1\n        elseif kiteStep > 4 then\n          kiteStep = 4\n        end if\n        kiteX = myX + kiteStep\n        kiteY = myY + kiteStep\n        if bestX >= myX then\n          kiteX = myX - kiteStep\n        end if\n        if bestY >= myY then\n          kiteY = myY - kiteStep\n        end if\n        moveTo(kiteX, kiteY, 0)\n        end\n      end if\n    end if\n  end if\n  if selfTarget <> bestId then\n    accepted = attackTarget(bestId)\n    actionError = lastActionError()\n    if accepted = 0 then\n      blockedId = bestId\n      blockedUntil = worldTick + tickRate * 3\n    else\n      orderTick = 0\n    end if\n  end if\n  end\nend if\n\n' Farm separate lanes early, then converge on the enemy god to finish.\nmiddleX = mapWidth \\ 2\nmiddleY = mapHeight \\ 2\nif selfLevel < 6 then\n  if role = 0 or role = 2 then\n    middleX = mapWidth \\ 10\n    middleY = mapHeight \\ 10\n  elseif role = 1 or role = 3 then\n    middleX = mapWidth * 9 \\ 10\n    middleY = mapHeight * 9 \\ 10\n  end if\nend if\ndx = myX - middleX\ndy = myY - middleY\nif dx * dx + dy * dy <= 36 then\n  crossedMiddle = 1\nend if\ngoalX = middleX\ngoalY = middleY\nif crossedMiddle then\n  goalX = enemyX\n  goalY = enemyY\nend if\nif canShop() and owned(21) > 0 and selfPortalCooldown = 0 then\n  dx = myX - forwardX\n  dy = myY - forwardY\n  if forwardDistance < 1000000 and dx * dx + dy * dy > 400 then\n    if threatDistance > 144 then\n      accepted = useItemAt(inventorySlot(21), originX + side * forwardX, originY + side * forwardY)\n      actionError = lastActionError()\n      if accepted then\n        end\n      end if\n    end if\n  end if\nend if\nmoveTo(goalX, goalY, 1)\n",
+  "ir": {
+    "id": "gota_hero",
+    "goal": {
+      "G_buy": {
+        "claim": "Economy",
+        "provenance": "interpretation"
+      },
+      "G_main": {
+        "claim": "Victory",
+        "provenance": "interpretation"
+      },
+      "G_setup": {
+        "claim": "Policy setup",
+        "provenance": "interpretation"
+      },
+      "G_moveTo": {
+        "claim": "Movement",
+        "provenance": "interpretation"
+      },
+      "G_spells": {
+        "claim": "Combat",
+        "provenance": "interpretation"
+      },
+      "G_observe": {
+        "claim": "Observation",
+        "provenance": "interpretation"
+      },
+      "G_inventory": {
+        "claim": "Economy",
+        "provenance": "interpretation"
+      },
+      "G_chooseHero": {
+        "claim": "Drafting",
+        "provenance": "interpretation"
+      },
+      "G_readObject": {
+        "claim": "Observation",
+        "provenance": "interpretation"
+      },
+      "G_dodgeWarnings": {
+        "claim": "Survival",
+        "provenance": "interpretation"
+      },
+      "G_learnAbilities": {
+        "claim": "Progression",
+        "provenance": "interpretation"
+      }
+    },
+    "skill": {
+      "S_buy": {
+        "intent": "Buy available items",
+        "operator": "buy"
+      },
+      "S_main": {
+        "intent": "Coordinate combat, farming and pushing",
+        "operator": "main"
+      },
+      "S_setup": {
+        "intent": "State and declarations",
+        "operator": "setup"
+      },
+      "S_moveTo": {
+        "intent": "Move toward a chosen goal",
+        "operator": "moveTo"
+      },
+      "S_spells": {
+        "intent": "Cast available abilities",
+        "operator": "spells"
+      },
+      "S_observe": {
+        "intent": "Choose observed threats and opportunities",
+        "operator": "observe"
+      },
+      "S_inventory": {
+        "intent": "Use and resupply items",
+        "operator": "inventory"
+      },
+      "S_chooseHero": {
+        "intent": "Draft a team role",
+        "operator": "chooseHero"
+      },
+      "S_readObject": {
+        "intent": "Read visible objects",
+        "operator": "readObject"
+      },
+      "S_dodgeWarnings": {
+        "intent": "Avoid observed danger",
+        "operator": "dodgeWarnings"
+      },
+      "S_learnAbilities": {
+        "intent": "Choose legal ability upgrades",
+        "operator": "learnAbilities"
+      }
+    },
+    "belief": {
+      "claims": {
+        "B_baseline_1": {
+          "claim": "The starter policy establishes the baseline to beat",
+          "status": "untested",
+          "evidence": []
+        }
+      }
+    },
+    "schema": "gota-harness-semantic-ir/1",
+    "update": {
+      "change": "Baseline: official starter policy",
+      "parent": "16d5dffcafbca9f3f855a02b5e90cd42419c432ff65b68f730a00d1569014417",
+      "evidence": [],
+      "revision": 1,
+      "research_plan": {
+        "expected": "Completes matches without errors and yields a baseline league win rate",
+        "hypothesis": "The starter policy establishes the baseline to beat",
+        "non_trigger": "No gameplay edits were made, so no behavior change is being tested"
+      }
+    },
+    "strategy": [
+      {
+        "id": "R_setup",
+        "for": [
+          "G_setup"
+        ],
+        "when": "P_setup",
+        "skill": "S_setup",
+        "intent": "State and declarations",
+        "source": {
+          "end": 515,
+          "start": 0,
+          "sha256": "165c0e1116fd1dd7f73ad6c514abd2c8994ce5d62a7d506a75b2b8e376221097",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_chooseHero",
+        "for": [
+          "G_chooseHero"
+        ],
+        "when": "P_chooseHero",
+        "skill": "S_chooseHero",
+        "intent": "Draft a team role",
+        "source": {
+          "end": 1311,
+          "start": 515,
+          "sha256": "a7552dc4a492b7b8f6eadb2b2b9d2c7b8e101c3a6c1423b4652b9eaa23665248",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_learnAbilities",
+        "for": [
+          "G_learnAbilities"
+        ],
+        "when": "P_learnAbilities",
+        "skill": "S_learnAbilities",
+        "intent": "Choose legal ability upgrades",
+        "source": {
+          "end": 2332,
+          "start": 1311,
+          "sha256": "ca2ffb44585be76da815c94f7afe4e3f0bc6545332bc740ddf292aa9eed858b8",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_readObject",
+        "for": [
+          "G_readObject"
+        ],
+        "when": "P_readObject",
+        "skill": "S_readObject",
+        "intent": "Read visible objects",
+        "source": {
+          "end": 6142,
+          "start": 2332,
+          "sha256": "5d53b9459f82e7d66d6157bb9498107f8203712b1f60cc4e0545217f2fdd0f56",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_observe",
+        "for": [
+          "G_observe"
+        ],
+        "when": "P_observe",
+        "skill": "S_observe",
+        "intent": "Choose observed threats and opportunities",
+        "source": {
+          "end": 8793,
+          "start": 6142,
+          "sha256": "f1055982084544512ddd3acd8c0e4fa4744a89b4fc921497c484b43d41cc3c08",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_buy",
+        "for": [
+          "G_buy"
+        ],
+        "when": "P_buy",
+        "skill": "S_buy",
+        "intent": "Buy available items",
+        "source": {
+          "end": 9322,
+          "start": 8793,
+          "sha256": "0d29931e1eed90ce47c98be778ce77fc0c45574bdac076c32cd91f509c82f9ee",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_inventory",
+        "for": [
+          "G_inventory"
+        ],
+        "when": "P_inventory",
+        "skill": "S_inventory",
+        "intent": "Use and resupply items",
+        "source": {
+          "end": 11124,
+          "start": 9322,
+          "sha256": "95c229e43176cd23caa86da0cc313f24ce2d4b4b4410bc3c07fc1f08dc297ff2",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_dodgeWarnings",
+        "for": [
+          "G_dodgeWarnings"
+        ],
+        "when": "P_dodgeWarnings",
+        "skill": "S_dodgeWarnings",
+        "intent": "Avoid observed danger",
+        "source": {
+          "end": 12606,
+          "start": 11124,
+          "sha256": "74c7bdd2923f2e877d68fff570730f65ab23ee4e40f0e521e9149472237a8431",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_moveTo",
+        "for": [
+          "G_moveTo"
+        ],
+        "when": "P_moveTo",
+        "skill": "S_moveTo",
+        "intent": "Move toward a chosen goal",
+        "source": {
+          "end": 15535,
+          "start": 12606,
+          "sha256": "5c208ec3b772c2e27667a32df7115cb9ec3d3cb5a0b9fed24af216e88e6bb1b6",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_spells",
+        "for": [
+          "G_spells"
+        ],
+        "when": "P_spells",
+        "skill": "S_spells",
+        "intent": "Cast available abilities",
+        "source": {
+          "end": 18611,
+          "start": 15535,
+          "sha256": "33ffccfad9ffac18f29fbb463c92c4c6436bfdb9134358f88e7eae8ec9a16043",
+          "status": "mapped"
+        }
+      },
+      {
+        "id": "R_main",
+        "for": [
+          "G_main"
+        ],
+        "when": "P_main",
+        "skill": "S_main",
+        "intent": "Coordinate combat, farming and pushing",
+        "source": {
+          "end": 25123,
+          "start": 18611,
+          "sha256": "546344cba9ddc31f0e2009ee67cb28db657cd3d2d049a28125429ae334c89bb7",
+          "status": "mapped"
+        }
+      }
+    ],
+    "execution": {
+      "mode": "source_mapped_no_compiler",
+      "binding": "gota-harness-source-map/1",
+      "language": "Polyworld BASIC",
+      "source_sha256": "5dbbd273ca48953649e8fc772644fd81242ecb3454e482154665ece13adec904"
+    },
+    "situation": {
+      "unknowns": [
+        "Unseen opponents and runtime effects are not inferred from source."
+      ],
+      "authority": "visible host state and BASIC source",
+      "predicates": {
+        "P_buy": "Source section buy is reached under its BASIC guards.",
+        "P_main": "Source section main is reached under its BASIC guards.",
+        "P_setup": "Source section setup is reached under its BASIC guards.",
+        "P_moveTo": "Source section moveTo is reached under its BASIC guards.",
+        "P_spells": "Source section spells is reached under its BASIC guards.",
+        "P_observe": "Source section observe is reached under its BASIC guards.",
+        "P_inventory": "Source section inventory is reached under its BASIC guards.",
+        "P_chooseHero": "Source section chooseHero is reached under its BASIC guards.",
+        "P_readObject": "Source section readObject is reached under its BASIC guards.",
+        "P_dodgeWarnings": "Source section dodgeWarnings is reached under its BASIC guards.",
+        "P_learnAbilities": "Source section learnAbilities is reached under its BASIC guards."
+      }
+    }
+  },
+  "revisionId": "5c4f4f4e13b40b4b88208534f4ce9bb3d83b8a61c78fb9f5e79bac630922b120",
+  "receipts": {
+    "notes": [
+      "Source spans and references checked; whole-program semantic extraction is unavailable for this BASIC policy.",
+      "Behavioral intent and hosted performance need independent checks."
+    ],
+    "fidelity": "not_run",
+    "validity": "not_run",
+    "performance": "not_run",
+    "representation": "partial"
+  }
+}
